@@ -109,6 +109,22 @@ export async function fetchProjectMetadata(identifier) {
     }
 }
 
+// Minimal 1x1 Transparent PNG
+const EMPTY_PNG = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+  0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+  0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+  0x42, 0x60, 0x82
+]);
+
+// Minimal Silence WAV (44 bytes)
+const EMPTY_WAV = new Uint8Array([
+  0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20,
+  0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x44, 0xac, 0x00, 0x00, 0x88, 0x58, 0x01, 0x00,
+  0x02, 0x00, 0x10, 0x00, 0x64, 0x61, 0x74, 0x61, 0x00, 0x00, 0x00, 0x00
+]);
+
 export async function processAssets(assetList) {
     const files = {};
     const encoder = new TextEncoder();
@@ -138,19 +154,40 @@ export async function processAssets(assetList) {
                 const res = await fetch(fetchUrl);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-                // Check content type to prevent saving HTML error pages as binary assets
-                // This prevents "EncodingError" in AudioContext when the game tries to decode an error page
-                const contentType = res.headers.get('content-type');
-                if (contentType && contentType.includes('text/html') && /\.(mp3|wav|ogg|glb|gltf|png|jpg|jpeg|gif)$/i.test(path)) {
-                    throw new Error(`Received HTML (likely error page) instead of binary for ${path}`);
+                const blob = await res.arrayBuffer();
+                
+                // Validate content to avoid saving HTML error pages as binary assets
+                if (/\.(mp3|wav|ogg|glb|gltf|png|jpg|jpeg|gif)$/i.test(path)) {
+                    // 1. Content-Type Check
+                    const contentType = res.headers.get('content-type');
+                    if (contentType && contentType.includes('text/html')) {
+                        throw new Error(`Received HTML content-type for binary asset`);
+                    }
+
+                    // 2. Sniff content for text signatures
+                    const header = new Uint8Array(blob.slice(0, 100));
+                    const textHeader = new TextDecoder().decode(header).trim();
+                    if (textHeader.startsWith('<!DOCTYPE') || 
+                        textHeader.startsWith('<html') || 
+                        textHeader.startsWith('{"error"') ||
+                        textHeader.includes('Error fetching') ||
+                        textHeader.includes('AccessDenied')) {
+                            throw new Error(`Content sniffer detected text/error signature`);
+                    }
                 }
 
-                const blob = await res.arrayBuffer();
                 files[path] = new Uint8Array(blob);
             } catch (e) {
-                console.warn(`[Asset Warning] Skipping ${path}:`, e.message);
-                // We do NOT write a placeholder file here. 
-                // A missing file (404) is handled better by game engines than a corrupted file (EncodingError).
+                console.warn(`[Asset Warning] Failed to load ${path}:`, e.message);
+                
+                // Provide fallback assets to prevent runtime crashes (e.g. EncodingError on decodeAudioData)
+                if (/\.(mp3|wav|ogg)$/i.test(path)) {
+                    console.log(`   -> Using fallback silence for ${path}`);
+                    files[path] = EMPTY_WAV;
+                } else if (/\.(png|jpg|jpeg|gif)$/i.test(path)) {
+                    console.log(`   -> Using fallback transparent pixel for ${path}`);
+                    files[path] = EMPTY_PNG;
+                }
             }
             return;
         }
