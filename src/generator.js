@@ -51,8 +51,10 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
                 const fullPath = dir ? `${dir}/${script.filename}` : script.filename;
                 clientFiles[fullPath] = script.content;
             });
+        } else if (path.endsWith('.css')) {
+            clientFiles[path] = analyzer.processCSS(content, path);
         } else {
-            // Static assets (images, css, etc)
+            // Static assets (images, etc)
             clientFiles[path] = content;
         }
     }
@@ -83,8 +85,18 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
 
     // 3. Client Folder (Source)
     const clientFolder = zip.folder("client");
+    const publicFolder = clientFolder.folder("public");
+
     for (const [path, content] of Object.entries(clientFiles)) {
-        clientFolder.file(path, content);
+        // Determine if file is source code (processed by Vite) or static asset (copied as-is)
+        // CSS is included as source so Vite can bundle/minify it
+        if (/\.(html|js|mjs|ts|jsx|tsx|css|scss)$/i.test(path)) {
+            clientFolder.file(path, content);
+        } else {
+            // Static assets (images, audio, json, models) go to public/
+            // Vite copies public/ files to the build root
+            publicFolder.file(path, content);
+        }
     }
 
     // Add Polyfills to Client

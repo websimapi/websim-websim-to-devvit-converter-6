@@ -75,6 +75,11 @@ export class AssetAnalyzer {
     // Rewrites JS imports to use NPM packages
     processJS(jsContent, filename = 'script.js') {
         const code = uint8ToString(jsContent);
+        
+        // Calculate relative path to root for asset corrections
+        const depth = (filename.match(/\//g) || []).length;
+        const rootPrefix = depth > 0 ? '../'.repeat(depth) : './';
+
         let ast;
         try {
             ast = acorn.parse(code, { sourceType: 'module', ecmaVersion: 'latest', allowReturnOutsideFunction: true, allowHashBang: true });
@@ -96,6 +101,19 @@ export class AssetAnalyzer {
             }
         };
 
+        const rewritePaths = (node) => {
+            if (node.type === 'Literal' && typeof node.value === 'string') {
+                const val = node.value;
+                // Rewrite absolute paths to static assets
+                // e.g. "/assets/sound.mp3" -> "./assets/sound.mp3" (if root) or "../assets/sound.mp3" (if nested)
+                if (val.startsWith('/') && !val.startsWith('//') && /\.(png|jpg|jpeg|gif|mp3|wav|ogg|glb|gltf|svg|json)$/i.test(val)) {
+                    const newVal = rootPrefix + val.substring(1);
+                    magic.overwrite(node.start, node.end, JSON.stringify(newVal));
+                    hasChanges = true;
+                }
+            }
+        };
+
         walkSimple(ast, {
             ImportDeclaration: rewrite,
             ExportNamedDeclaration: rewrite,
@@ -108,7 +126,8 @@ export class AssetAnalyzer {
                         hasChanges = true;
                     }
                 }
-            }
+            },
+            Literal: rewritePaths
         });
 
         // Remove "import { ... } from '...'" where import is a URL that might be purely side-effect or polyfill we don't need? 
@@ -183,6 +202,20 @@ export class AssetAnalyzer {
         html = html.replace(/\s+on\w+\s*=\s*["'][^"']*["']/gi, '');
 
         return { html, extractedScripts };
+    }
+
+    processCSS(cssContent, filename = 'style.css') {
+        const css = uint8ToString(cssContent);
+        
+        const depth = (filename.match(/\//g) || []).length;
+        const rootPrefix = depth > 0 ? '../'.repeat(depth) : './';
+
+        // Replace absolute paths in url() with relative ones
+        // e.g. url(/images/bg.png) -> url(./images/bg.png) or url(../images/bg.png)
+        return css.replace(/url\(\s*(['"]?)(\/[^)'"]+)\1\s*\)/gi, (match, quote, path) => {
+            if (path.startsWith('//')) return match; // Skip protocol-relative
+            return `url(${quote}${rootPrefix}${path.substring(1)}${quote})`;
+        });
     }
 }
 

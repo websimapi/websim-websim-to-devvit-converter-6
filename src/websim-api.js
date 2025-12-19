@@ -160,19 +160,30 @@ export async function processAssets(assetList) {
                 if (/\.(mp3|wav|ogg|glb|gltf|png|jpg|jpeg|gif)$/i.test(path)) {
                     // 1. Content-Type Check
                     const contentType = res.headers.get('content-type');
-                    if (contentType && contentType.includes('text/html')) {
-                        throw new Error(`Received HTML content-type for binary asset`);
+                    // Some servers return text/plain for everything, so we trust signature more, 
+                    // but text/html is almost always wrong for these extensions.
+                    if (contentType && (contentType.includes('text/html') || contentType.includes('application/json'))) {
+                        throw new Error(`Received invalid content-type: ${contentType}`);
                     }
 
-                    // 2. Sniff content for text signatures
-                    const header = new Uint8Array(blob.slice(0, 100));
+                    // 2. Sniff content for text/json signatures
+                    const header = new Uint8Array(blob.slice(0, 50));
                     const textHeader = new TextDecoder().decode(header).trim();
+                    
+                    // Check for common text file starts
                     if (textHeader.startsWith('<!DOCTYPE') || 
                         textHeader.startsWith('<html') || 
-                        textHeader.startsWith('{"error"') ||
-                        textHeader.includes('Error fetching') ||
-                        textHeader.includes('AccessDenied')) {
-                            throw new Error(`Content sniffer detected text/error signature`);
+                        textHeader.startsWith('{') || // JSON start
+                        textHeader.startsWith('Error') ||
+                        textHeader.includes('AccessDenied') ||
+                        textHeader.includes('NoSuchKey') ||
+                        textHeader.includes('Cannot GET')) {
+                            throw new Error(`Content sniffer detected text/error signature: "${textHeader.substring(0, 15)}..."`);
+                    }
+                    
+                    // 3. Size check (too small = suspicious for media, unless it's pixel art/tiny sound)
+                    if (blob.byteLength < 5) {
+                        throw new Error('Asset too small to be valid.');
                     }
                 }
 
